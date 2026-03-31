@@ -1,0 +1,25 @@
+name: Build MoltenVK v1.4.1 with Format Fallback
+on:
+  push:
+    branches: [format-fallback-v1.4.1]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Fetch dependencies
+      run: ./fetchDependencies --macos
+
+    - name: Build MoltenVK
+      run: |
+        make macos
+        ls -la Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: MoltenVK-v141-format-fallback
+        path: Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
