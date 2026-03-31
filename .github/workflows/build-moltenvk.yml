@@ -13,10 +13,11 @@ jobs:
     - name: Fetch dependencies
       run: ./fetchDependencies --macos
 
-    - name: Build MoltenVK
+    - name: Build MoltenVK with private API
       run: |
-        make macos
+        make macos MVK_CONFIG_LOG_LEVEL=1 MVK_HIDE_VULKAN_SYMBOLS=0 MVK_USE_METAL_PRIVATE_API=1
         ls -la Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+        nm -g Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib | grep "mvkMTLLogicOperation\|mvkMTLProvokingVertex"
 
     - name: Upload
       uses: actions/upload-artifact@v4
