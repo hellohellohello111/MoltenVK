@@ -999,6 +999,42 @@ id<MTLRenderPipelineState> MVKGraphicsPipeline::getOrCompilePipeline(MTLRenderPi
 		MVKRenderPipelineCompiler* plc = new MVKRenderPipelineCompiler(this);
 		plState = plc->newMTLRenderPipelineState(plDesc);	// retained
 		plc->destroy();
+
+		// Workaround: if pipeline compilation failed due to shader output type
+		// not matching the color attachment format (e.g. float4 vs RGBA16Uint),
+		// retry with compatible float formats. Android Vulkan drivers handle this
+		// implicitly; Metal requires an exact type match. This retry substitutes
+		// integer pixel formats with their float equivalents for pipeline compilation
+		// only — the underlying texture storage format is unchanged, and Apple Silicon
+		// GPUs handle the conversion at the hardware level.
+		if ( !plState ) {
+			bool modified = false;
+			for (uint32_t i = 0; i < 8; i++) {
+				MTLPixelFormat fmt = plDesc.colorAttachments[i].pixelFormat;
+				MTLPixelFormat newFmt = fmt;
+				switch (fmt) {
+					case MTLPixelFormatRGBA16Uint:  newFmt = MTLPixelFormatRGBA16Float; break;
+					case MTLPixelFormatRGBA16Sint:  newFmt = MTLPixelFormatRGBA16Float; break;
+					case MTLPixelFormatRGBA32Uint:  newFmt = MTLPixelFormatRGBA32Float; break;
+					case MTLPixelFormatRGBA32Sint:  newFmt = MTLPixelFormatRGBA32Float; break;
+					case MTLPixelFormatRGBA8Uint:   newFmt = MTLPixelFormatRGBA8Unorm;  break;
+					case MTLPixelFormatRGBA8Sint:   newFmt = MTLPixelFormatRGBA8Unorm;  break;
+					case MTLPixelFormatRG16Uint:    newFmt = MTLPixelFormatRG16Float;   break;
+					case MTLPixelFormatR32Uint:     newFmt = MTLPixelFormatR32Float;    break;
+					default: break;
+				}
+				if (newFmt != fmt) {
+					plDesc.colorAttachments[i].pixelFormat = newFmt;
+					modified = true;
+				}
+			}
+			if (modified) {
+				MVKRenderPipelineCompiler* plc2 = new MVKRenderPipelineCompiler(this);
+				plState = plc2->newMTLRenderPipelineState(plDesc);	// retained
+				plc2->destroy();
+			}
+		}
+
 		if ( !plState ) { _hasValidMTLPipelineStates = false; }
 	}
 	return plState;
