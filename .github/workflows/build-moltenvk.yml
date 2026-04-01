@@ -1,4 +1,4 @@
-name: Build MoltenVK v1.4.1 with Format Fallback
+name: Build MoltenVK v1.4.1 with SPIRV-Cross Output Cast Fix
 on:
   push:
     branches: [format-fallback-v1.4.1]
@@ -13,14 +13,20 @@ jobs:
     - name: Fetch dependencies
       run: ./fetchDependencies --macos
 
+    - name: Apply SPIRV-Cross output type cast patch
+      run: |
+        cd External/SPIRV-Cross
+        git apply ../../patches/spirv_cross_output_cast.patch
+        echo "SPIRV-Cross patch applied"
+        grep -c "needs_output_type_cast" spirv_msl.cpp
+
     - name: Build MoltenVK with private API
       run: |
         make macos MVK_CONFIG_LOG_LEVEL=1 MVK_HIDE_VULKAN_SYMBOLS=0 MVK_USE_METAL_PRIVATE_API=1
         ls -la Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
-        nm -g Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib | grep "mvkMTLLogicOperation\|mvkMTLProvokingVertex"
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MoltenVK-v141-format-fallback
+        name: MoltenVK-spirvcross-fix
         path: Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib

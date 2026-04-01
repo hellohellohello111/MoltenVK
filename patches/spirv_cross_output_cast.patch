@@ -1,0 +1,106 @@
+diff --git a/spirv_msl.cpp b/spirv_msl.cpp
+index db40c443..ad88a3c8 100644
+--- a/spirv_msl.cpp
++++ b/spirv_msl.cpp
+@@ -2837,6 +2837,77 @@ void CompilerMSL::add_plain_variable_to_interface_block(StorageClass storage, co
+ 		}
+ 	}
+ 
++	// Check if the fragment output type needs to be overridden to match the render target format.
++	// On Metal, shader output type must exactly match the color attachment pixel format.
++	// Android Vulkan drivers handle mismatches implicitly (e.g. float4 → RGBA16Uint truncates to ~0).
++	// This override makes SPIRV-Cross generate the correct output type and insert a cast.
++	bool needs_output_type_cast = false;
++	uint32_t original_type_id = type_id;
++	if (storage == StorageClassOutput && !is_builtin &&
++	    get_entry_point().model == ExecutionModelFragment &&
++	    has_decoration(var.self, DecorationLocation))
++	{
++		uint32_t locn = get_decoration(var.self, DecorationLocation);
++		auto output_itr = outputs_by_location.find({locn, 0});
++		if (output_itr != end(outputs_by_location))
++		{
++			auto &output = output_itr->second;
++			auto &current_type = get<SPIRType>(type_id);
++
++			// If shader outputs float but render target expects uint, override to uint
++			bool shader_is_float = (current_type.basetype == SPIRType::Float ||
++			                        current_type.basetype == SPIRType::Half);
++			bool target_is_uint = (output.format == MSL_SHADER_VARIABLE_FORMAT_UINT8 ||
++			                       output.format == MSL_SHADER_VARIABLE_FORMAT_UINT16);
++
++			if (shader_is_float && target_is_uint)
++			{
++				// Build a uint type matching the shader's vecsize
++				uint32_t new_type_id = ir.increase_bound_by(1);
++				SPIRType new_type = current_type;
++				if (output.format == MSL_SHADER_VARIABLE_FORMAT_UINT16)
++				{
++					new_type.basetype = SPIRType::UShort;
++					new_type.width = 16;
++				}
++				else
++				{
++					new_type.basetype = SPIRType::UInt;
++					new_type.width = 32;
++				}
++				set<SPIRType>(new_type_id, new_type);
++				type_id = new_type_id;
++				needs_output_type_cast = true;
++			}
++
++			// If shader outputs uint but render target expects float, override to float
++			bool shader_is_uint = (current_type.basetype == SPIRType::UInt ||
++			                       current_type.basetype == SPIRType::UShort);
++			bool target_is_float = (output.format == MSL_SHADER_VARIABLE_FORMAT_ANY16 ||
++			                        output.format == MSL_SHADER_VARIABLE_FORMAT_ANY32 ||
++			                        output.format == MSL_SHADER_VARIABLE_FORMAT_OTHER);
++
++			if (shader_is_uint && target_is_float)
++			{
++				uint32_t new_type_id = ir.increase_bound_by(1);
++				SPIRType new_type = current_type;
++				if (output.format == MSL_SHADER_VARIABLE_FORMAT_ANY16)
++				{
++					new_type.basetype = SPIRType::Half;
++					new_type.width = 16;
++				}
++				else
++				{
++					new_type.basetype = SPIRType::Float;
++					new_type.width = 32;
++				}
++				set<SPIRType>(new_type_id, new_type);
++				type_id = new_type_id;
++				needs_output_type_cast = true;
++			}
++		}
++	}
++
+ 	if (storage == StorageClassInput && pull_model_inputs.count(var.self))
+ 		ib_type.member_types.push_back(build_msl_interpolant_type(type_id, is_noperspective));
+ 	else
+@@ -2859,7 +2930,22 @@ void CompilerMSL::add_plain_variable_to_interface_block(StorageClass storage, co
+ 			qual_var_name += ".interpolate_at_center()";
+ 	}
+ 
+-	if (padded_output || padded_input)
++	// If the output type was overridden, add a fixup hook that casts the shader's
++	// value to the render target type before writing to the output struct.
++	if (needs_output_type_cast)
++	{
++		entry_func.add_local_variable(var.self);
++		vars_needing_early_declaration.push_back(var.self);
++
++		entry_func.fixup_hooks_out.push_back([=, &var]() {
++			auto &cast_target_type = get<SPIRType>(type_id);
++			statement(qual_var_name, " = ", type_to_glsl(cast_target_type), "(", to_name(var.self), ");");
++		});
++
++		auto &entry_func_ref = get<SPIRFunction>(ir.default_entry_point);
++		ir.meta[var.self].decoration.alias = to_name(var.self);
++	}
++	else if (padded_output || padded_input)
+ 	{
+ 		entry_func.add_local_variable(var.self);
+ 		vars_needing_early_declaration.push_back(var.self);
