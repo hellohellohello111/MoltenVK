@@ -1001,35 +1001,59 @@ id<MTLRenderPipelineState> MVKGraphicsPipeline::getOrCompilePipeline(MTLRenderPi
 		plc->destroy();
 
 		// Workaround: if pipeline compilation failed (e.g. shader output type
-		// doesn't match color attachment format — float4 vs RGBA16Uint), retry
-		// with compatible float formats. Android Vulkan drivers handle this
-		// implicitly; Metal requires exact type match. Only the pipeline
-		// descriptor format is changed — texture storage stays the same.
+		// doesn't match color attachment format — float4 vs RGBA16Uint), compile
+		// a fallback shader that writes zeros to all color attachments. This
+		// matches Android Vulkan behavior where float→uint truncation produces ~0.
+		// The fallback only applies to the mismatched FBO binding; the same shader
+		// works correctly when bound to a compatible FBO (float attachment).
 		if ( !plState ) {
-			bool modified = false;
+			bool hasIntegerAttachment = false;
 			for (uint32_t i = 0; i < 8; i++) {
 				MTLPixelFormat fmt = plDesc.colorAttachments[i].pixelFormat;
-				MTLPixelFormat newFmt = fmt;
-				switch (fmt) {
-					case MTLPixelFormatRGBA16Uint:  newFmt = MTLPixelFormatRGBA16Float; break;
-					case MTLPixelFormatRGBA16Sint:  newFmt = MTLPixelFormatRGBA16Float; break;
-					case MTLPixelFormatRGBA32Uint:  newFmt = MTLPixelFormatRGBA32Float; break;
-					case MTLPixelFormatRGBA32Sint:  newFmt = MTLPixelFormatRGBA32Float; break;
-					case MTLPixelFormatRGBA8Uint:   newFmt = MTLPixelFormatRGBA8Unorm;  break;
-					case MTLPixelFormatRGBA8Sint:   newFmt = MTLPixelFormatRGBA8Unorm;  break;
-					case MTLPixelFormatRG16Uint:    newFmt = MTLPixelFormatRG16Float;   break;
-					case MTLPixelFormatR32Uint:     newFmt = MTLPixelFormatR32Float;    break;
-					default: break;
-				}
-				if (newFmt != fmt) {
-					plDesc.colorAttachments[i].pixelFormat = newFmt;
-					modified = true;
+				if (fmt == MTLPixelFormatRGBA16Uint || fmt == MTLPixelFormatRGBA16Sint ||
+					fmt == MTLPixelFormatRGBA32Uint || fmt == MTLPixelFormatRGBA32Sint ||
+					fmt == MTLPixelFormatRGBA8Uint  || fmt == MTLPixelFormatRGBA8Sint  ||
+					fmt == MTLPixelFormatRG16Uint   || fmt == MTLPixelFormatR32Uint) {
+					hasIntegerAttachment = true;
+					break;
 				}
 			}
-			if (modified) {
-				MVKRenderPipelineCompiler* plc2 = new MVKRenderPipelineCompiler(this);
-				plState = plc2->newMTLRenderPipelineState(plDesc);
-				plc2->destroy();
+			if (hasIntegerAttachment) {
+				// Build a minimal fragment shader that writes zeros
+				NSMutableString* msl = [NSMutableString stringWithString:@
+					"#include <metal_stdlib>\n"
+					"using namespace metal;\n"
+					"struct FallbackOut {\n"];
+				for (uint32_t i = 0; i < 8; i++) {
+					MTLPixelFormat fmt = plDesc.colorAttachments[i].pixelFormat;
+					if (fmt == MTLPixelFormatInvalid) continue;
+					bool isInt = (fmt == MTLPixelFormatRGBA16Uint || fmt == MTLPixelFormatRGBA16Sint ||
+								  fmt == MTLPixelFormatRGBA32Uint || fmt == MTLPixelFormatRGBA32Sint ||
+								  fmt == MTLPixelFormatRGBA8Uint  || fmt == MTLPixelFormatRGBA8Sint  ||
+								  fmt == MTLPixelFormatRG16Uint   || fmt == MTLPixelFormatR32Uint);
+					bool isSigned = (fmt == MTLPixelFormatRGBA16Sint || fmt == MTLPixelFormatRGBA32Sint ||
+									 fmt == MTLPixelFormatRGBA8Sint);
+					NSString* type = isInt ? (isSigned ? @"int4" : @"uint4") : @"float4";
+					[msl appendFormat:@"  %@ c%u [[color(%u)]];\n", type, i, i];
+				}
+				[msl appendString:@"};\n"
+					"fragment FallbackOut mvk_fallback_frag() {\n"
+					"  return FallbackOut{};\n"
+					"}\n"];
+
+				NSError* err = nil;
+				id<MTLLibrary> lib = [getMTLDevice() newLibraryWithSource:msl options:nil error:&err];
+				if (lib) {
+					id<MTLFunction> fallbackFunc = [lib newFunctionWithName:@"mvk_fallback_frag"];
+					if (fallbackFunc) {
+						plDesc.fragmentFunction = fallbackFunc;
+						MVKRenderPipelineCompiler* plc2 = new MVKRenderPipelineCompiler(this);
+						plState = plc2->newMTLRenderPipelineState(plDesc);
+						plc2->destroy();
+						[fallbackFunc release];
+					}
+					[lib release];
+				}
 			}
 		}
 
