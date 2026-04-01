@@ -1,5 +1,5 @@
 diff --git a/spirv_msl.cpp b/spirv_msl.cpp
-index db40c443..ad88a3c8 100644
+index db40c443..0be1ee75 100644
 --- a/spirv_msl.cpp
 +++ b/spirv_msl.cpp
 @@ -2837,6 +2837,77 @@ void CompilerMSL::add_plain_variable_to_interface_block(StorageClass storage, co
@@ -80,22 +80,25 @@ index db40c443..ad88a3c8 100644
  	if (storage == StorageClassInput && pull_model_inputs.count(var.self))
  		ib_type.member_types.push_back(build_msl_interpolant_type(type_id, is_noperspective));
  	else
-@@ -2859,7 +2930,22 @@ void CompilerMSL::add_plain_variable_to_interface_block(StorageClass storage, co
+@@ -2859,7 +2930,25 @@ void CompilerMSL::add_plain_variable_to_interface_block(StorageClass storage, co
  			qual_var_name += ".interpolate_at_center()";
  	}
  
 -	if (padded_output || padded_input)
-+	// If the output type was overridden, add a fixup hook that casts the shader's
-+	// value to the render target type before writing to the output struct.
++	// If the output type was overridden due to a format mismatch, DON'T write to
++	// this output at all. In MSL, if a fragment shader doesn't write to a [[color(N)]]
++	// output, the attachment retains its previous value. This preserves data written
++	// by correctly-typed shaders (e.g. the prepass writes uint4 to RGBA16Uint, then
++	// a float4 ForwardPBR shader skips writing → prepass data preserved).
++	// On Android, the float→uint truncation produces ~0, but the prepass data is
++	// typically preserved through depth testing. Skipping the write achieves the same result.
 +	if (needs_output_type_cast)
 +	{
 +		entry_func.add_local_variable(var.self);
 +		vars_needing_early_declaration.push_back(var.self);
 +
-+		entry_func.fixup_hooks_out.push_back([=, &var]() {
-+			auto &cast_target_type = get<SPIRType>(type_id);
-+			statement(qual_var_name, " = ", type_to_glsl(cast_target_type), "(", to_name(var.self), ");");
-+		});
++		// Don't add a fixup hook — the output struct member won't be written.
++		// The shader's original value is computed but discarded for this attachment.
 +
 +		auto &entry_func_ref = get<SPIRFunction>(ir.default_entry_point);
 +		ir.meta[var.self].decoration.alias = to_name(var.self);
